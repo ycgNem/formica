@@ -137,7 +137,7 @@ export class Hud {
       h('div', { class: 'ng-track' }, this.nextBar));
 
     // Clock
-    const clock = h('div', { class: 'card clock' },
+    const clock = h('div', { class: 'clock' },
       h('div', { class: 'clock-top' }, this.seasonIco, this.dayText, this.weatherEl),
       h('div', { class: 'daybar' }, this.sunMark));
 
@@ -157,7 +157,9 @@ export class Hud {
     });
     const menuBtn = h('button', { class: 'card icon-btn', title: 'Menu (Esc)', 'aria-label': 'Menu', onclick: () => this.app.openPause() }, icon(ICON.menu));
     const photoBtn = h('button', { class: 'card icon-btn', title: 'Photo mode (H)', 'aria-label': 'Photo mode', onclick: () => this.app.photo.open() }, icon(ICON.camera));
-    const topRight = h('div', { class: 'top-right' }, h('div', { class: 'card res' }, this.sugarChip, this.proteinChip, this.pointsChip), speed, this.overlayBtn, photoBtn, menuBtn);
+    // The day and the stores share one bar along the top; time and view controls sit to its right
+    const status = h('div', { class: 'card status' }, clock, h('i', { class: 'vr' }), h('div', { class: 'res' }, this.sugarChip, this.proteinChip, this.pointsChip));
+    const topRight = h('div', { class: 'top-right' }, speed, this.overlayBtn, photoBtn, menuBtn);
 
     // Toolbar
     const bar = h('div', { class: 'card toolbar' });
@@ -217,7 +219,7 @@ export class Hud {
       h('div', { class: 'insp-actions' }, this.followBtn),
     );
 
-    r.append(h('div', { class: 'left-col' }, card, clock, this.insp), topRight, this.legend, this.side, toolWrap, this.toasts, this.prompt, this.tip);
+    r.append(h('div', { class: 'left-col' }, card, this.insp), status, topRight, this.legend, this.side, toolWrap, this.toasts, this.prompt, this.tip);
     document.body.append(this.bannerHost);
   }
 
@@ -481,8 +483,9 @@ export class Hud {
     const weather = s.weather.raining ? (s.isWinter ? 'Snow' : 'Rain') : s.darkness > 0.4 ? 'Night' : 'Clear';
     if (weather !== this.shownWeather) {
       this.shownWeather = weather;
-      const ic = weather === 'Rain' ? 'rain' : weather === 'Snow' ? 'season_3' : weather === 'Night' ? 'moon' : 'season_1';
-      this.weatherEl.replaceChildren(pix(ic), weather);
+      // Clear skies need no icon: in summer it would repeat the season's sun right beside it
+      const ic = weather === 'Rain' ? 'rain' : weather === 'Snow' ? 'season_3' : weather === 'Night' ? 'moon' : null;
+      this.weatherEl.replaceChildren(...(ic ? [pix(ic)] : []), weather);
     }
 
     if (p) {

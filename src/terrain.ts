@@ -24,11 +24,14 @@ const scale = (c: number, k: number): number => pack((c & 255) * k, ((c >> 8) & 
 const STRATA: RGB[] = [[116, 80, 54], [148, 104, 68], [174, 122, 78], [150, 118, 90], [100, 95, 92]];
 const STRATA_DEPTH = [12, 44, 100];
 /** Tint mixed into tunnel walls per chamber role: plain, queen, nursery, food store, midden, granary. */
-const ROLE_TINT: RGB[] = [[0, 0, 0], [132, 70, 106], [124, 112, 68], [84, 114, 62], [92, 78, 66], [156, 128, 66]];
-const ROCK_C: RGB = [122, 114, 106];
+const ROLE_TINT: RGB[] = [[0, 0, 0], [156, 92, 100], [200, 170, 124], [204, 150, 64], [58, 48, 42], [192, 160, 96]];
+/** How strongly a chamber's role shows in its walls. */
+const ROLE_MIX = 0.26;
+/** Warm grey stone, outline to highlight, so buried rocks match the painted ones on the surface. */
+const ROCK_RAMP: RGB[] = [[52, 44, 40], [88, 79, 72], [110, 100, 91], [133, 122, 110], [160, 149, 134]];
 const CRUMBS: RGB[] = [[198, 158, 112], [180, 140, 98], [158, 120, 84], [214, 178, 132]];
-const WATER: RGB = [74, 140, 194];
-const WATER_TOP: RGB = [170, 218, 246];
+const WATER: RGB = [58, 104, 140];
+const WATER_TOP: RGB = [128, 176, 204];
 /** Grass lip per season (light, dark); winter is snow. */
 const LIP: [RGB, RGB][] = [
   [[152, 206, 96], [104, 166, 70]],
@@ -308,12 +311,13 @@ export class Terrain {
         const tx = Math.round(cx + dx);
         const ty = Math.round(cy + dy);
         if (tx < 0 || ty < 0 || tx >= TW || ty >= TH) continue;
-        let k = 1 - 0.22 * (nx * 0.5 + ny * 0.8);
-        if (d2 > 0.62) k *= 0.76;
-        // Half soil, half stone: pebbles sit in the ground instead of floating on it
+        // Three flat tones, lit from above, with a darker rim: crisp pixel pebbles rather than soft smudges
+        let k = ny + nx * 0.3 < -0.45 ? 1.14 : ny > 0.35 ? 0.82 : 0.97;
+        if (d2 > 0.7) k = 0.7;
+        // Mostly stone with a little soil showing through, so they sit in the ground instead of floating on it
         const o = ty * TW + tx;
         const sb = this.soil[o];
-        this.soil[o] = pack(((sb & 255) * 0.45 + c[0] * 0.55) * k, (((sb >> 8) & 255) * 0.45 + c[1] * 0.55) * k, (((sb >> 16) & 255) * 0.45 + c[2] * 0.55) * k);
+        this.soil[o] = pack(((sb & 255) * 0.3 + c[0] * 0.7) * k, (((sb >> 8) & 255) * 0.3 + c[1] * 0.7) * k, (((sb >> 16) & 255) * 0.3 + c[2] * 0.7) * k);
       }
     }
   }
@@ -409,7 +413,7 @@ export class Terrain {
             px[o] = 0;
             continue;
           }
-          // Nearest tunnel corner decides chamber tint and water
+          // Nearest tunnel corner decides water; chamber tints blend across the corners so a room fades into its tunnels
           let best = k00;
           let bw = -1;
           if (c00 === TUNNEL && w00 > bw) { best = k00; bw = w00; }
@@ -425,26 +429,46 @@ export class Terrain {
           let r = (sb & 255) * 0.5 + 34;
           let g = ((sb >> 8) & 255) * 0.48 + 27;
           let b = ((sb >> 16) & 255) * 0.48 + 22;
-          const role = w.room[ti];
-          if (role) {
+          let tr = 0;
+          let tg = 0;
+          let tb = 0;
+          let tw = 0;
+          let ow = 0;
+          for (let q = 0; q < 4; q++) {
+            const kk = k00 + (q & 1) + (q >> 1) * 3;
+            if (nb[kk] !== TUNNEL) continue;
+            const wq = q === 0 ? w00 : q === 1 ? w10 : q === 2 ? w01 : w11;
+            ow += wq;
+            const role = w.room[nbi[kk]];
+            if (!role) continue;
             const t = ROLE_TINT[role];
-            r = r * 0.68 + t[0] * 0.32;
-            g = g * 0.68 + t[1] * 0.32;
-            b = b * 0.68 + t[2] * 0.32;
+            tr += t[0] * wq;
+            tg += t[1] * wq;
+            tb += t[2] * wq;
+            tw += wq;
+          }
+          if (tw > 0) {
+            const m = (ROLE_MIX * tw) / ow;
+            r = r * (1 - m) + (tr / tw) * m;
+            g = g * (1 - m) + (tg / tw) * m;
+            b = b * (1 - m) + (tb / tw) * m;
           }
           let k = e < 0.3 ? 0.6 + (e / 0.3) * 0.4 : 1;
           if (gv > 0.2 && e < 0.4) k *= 1 - 0.2 * (1 - e / 0.4);
           else if (gv < -0.2 && e < 0.14) k *= 1.2;
           if (w.water[ti]) {
+            // Murky groundwater: the tunnel shows through, with a pale line where the surface meets the air
             const wy = ty - ((ti / W) | 0) * TEX;
-            if (wy < 2 && !w.water[ti - W]) {
+            const surf = !w.water[ti - W];
+            if (surf && wy < 1) {
               px[o] = packc(WATER_TOP);
               continue;
             }
-            r = r * 0.28 + WATER[0] * 0.72;
-            g = g * 0.28 + WATER[1] * 0.72;
-            b = b * 0.28 + WATER[2] * 0.72;
-            k = 0.85 + k * 0.15;
+            const deep = surf && wy < 3 ? 0.5 : 0.62;
+            r = r * (1 - deep) + WATER[0] * deep;
+            g = g * (1 - deep) + WATER[1] * deep;
+            b = b * (1 - deep) + WATER[2] * deep;
+            k = 0.9 + k * 0.1;
           }
           px[o] = pack(r * k, g * k, b * k);
           continue;
@@ -458,34 +482,36 @@ export class Terrain {
         const rthr = 0.5 + 0.2 * this.rough[(((ty + 91) & NM) << 8) | ((tx + 53) & NM)];
         if (rock > rthr) {
           mat = 2;
-          const m = this.mott[(((ty + 128) & NM) << 8) | ((tx + 64) & NM)];
-          // Flat-shaded facets with speckle, so stones read as chunky rock rather than grey plates
+          // Flat-shaded facets with speckle on a warm ramp, a dark outline and a lit upper rim, like the painted stones
           const facet = this.mott[((((ty >> 1) + 77) & NM) << 8) | (((tx >> 1) + 31) & NM)];
           const gr0 = this.grain[(((ty + 11) & NM) << 8) | ((tx + 5) & NM)];
           const rr = rock - rthr;
-          let k = (facet > 0.2 ? 1.12 : facet < -0.2 ? 0.84 : 0.98) * (1 + 0.08 * m);
-          if (gr0 < 14) k *= 0.82;
-          else if (gr0 > 246) k *= 1.16;
-          // Lit from above: brighter where the stone continues below, darker where it continues above
+          let lv = facet > 0.22 ? 3 : facet < -0.22 ? 1 : 2;
+          if (gr0 < 14) lv--;
+          else if (gr0 > 246) lv++;
+          // Stone continuing above throws the lower part into shade
           const above = (nb[0] === ROCK ? 1 : 0) + (nb[1] === ROCK ? 1 : 0) + (nb[2] === ROCK ? 1 : 0);
           const below = (nb[6] === ROCK ? 1 : 0) + (nb[7] === ROCK ? 1 : 0) + (nb[8] === ROCK ? 1 : 0);
-          k *= 1 + 0.07 * (below - above) - 0.05 * (j / TEX - 0.5);
-          if (rr < 0.07) k *= 0.5;
+          if (above > below && j >= TEX / 2 && lv > 1) lv--;
+          if (rr < 0.12) lv = 0;
           else if (rr < 0.3) {
             const r00 = c00 === ROCK ? 1 : 0;
             const r10 = c10 === ROCK ? 1 : 0;
             const r01 = c01 === ROCK ? 1 : 0;
             const r11 = c11 === ROCK ? 1 : 0;
             const gr = (1 - fu) * (r01 - r00) + fu * (r11 - r10);
-            if (gr > 0.15) k *= rr < 0.16 ? 1.34 : 1.14;
-            else if (gr < -0.15) k *= 0.74;
+            if (gr > 0.15) lv = rr < 0.22 ? 4 : Math.max(lv, 3);
+            else if (gr < -0.15) lv = Math.min(lv, 1);
           }
-          col = packc(ROCK_C, k);
+          col = packc(ROCK_RAMP[lv < 0 ? 0 : lv > 4 ? 4 : lv]);
         } else {
           const mound = (c00 === MOUND ? w00 : 0) + (c10 === MOUND ? w10 : 0) + (c01 === MOUND ? w01 : 0) + (c11 === MOUND ? w11 : 0);
           if (mound > 0.5) {
             mat = 1;
-            col = packc(CRUMBS[this.grain[(((ty >> 1) & NM) << 8) | ((tx >> 1) & NM)] & 3]);
+            // Spoil in loose clumps: mottled light and dark, with the odd bright grain
+            const m = this.mott[((((ty >> 1) + 19) & NM) << 8) | (((tx >> 1) + 7) & NM)];
+            const g = this.grain[(((ty >> 1) & NM) << 8) | ((tx >> 1) & NM)];
+            col = packc(CRUMBS[g < 16 ? 3 : g > 236 ? 2 : m > 0.12 ? 0 : 1]);
           } else col = soil[o];
         }
         // A fallen log: moss in patches instead of a lawn along the top

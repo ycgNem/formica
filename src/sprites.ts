@@ -15,7 +15,7 @@ export interface Sprite {
 }
 
 /** Recolourings made at load time, so one painted sprite covers every season. */
-export type Look = 'spring' | 'autumn' | 'winter' | 'snow' | 'wilt' | 'blossom' | 'bare' | 'grey';
+export type Look = 'spring' | 'autumn' | 'winter' | 'snow' | 'wilt' | 'blossom' | 'bare' | 'grey' | 'dry';
 
 type Rect = [number, number, number, number];
 const META = atlasMeta as unknown as Record<string, Rect[]>;
@@ -219,6 +219,14 @@ function recolor(d: ImageData, look: Look, seed: number): void {
         case 'grey':
           s *= 0.15;
           l = l * 0.7 + 0.08;
+          break;
+        case 'dry':
+          // Sun-bleached scrub: olive and khaki instead of meadow green
+          if (leaf) {
+            hh = 48 + (hh - 100) * 0.15 + n * 10;
+            s *= 0.5;
+            l = Math.min(0.9, l * 1.05 + 0.04);
+          }
           break;
         default:
           break;

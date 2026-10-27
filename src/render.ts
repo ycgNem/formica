@@ -91,7 +91,15 @@ interface Cloud {
 
 export class Renderer {
   readonly cam = new Camera();
-  private readonly ctx: CanvasRenderingContext2D;
+  /** Where the world is drawn this frame: the screen, or the texel buffer when zoomed in. */
+  private ctx: CanvasRenderingContext2D;
+  private readonly screen: CanvasRenderingContext2D;
+  /** One pixel per texel, blown up to the screen, so everything in the world shares the sprites' pixel grid. */
+  private readonly buf = document.createElement('canvas');
+  private readonly bctx: CanvasRenderingContext2D;
+  /** Scratch layer for shapes that get hard pixel edges. */
+  private readonly lay = document.createElement('canvas');
+  private readonly lctx: CanvasRenderingContext2D;
   private readonly terrain = new Terrain();
   private readonly ambient = new Ambient();
 
@@ -113,7 +121,19 @@ export class Renderer {
   private t = 0;
 
   constructor(private readonly canvas: HTMLCanvasElement) {
-    this.ctx = canvas.getContext('2d')!;
+    this.screen = this.ctx = canvas.getContext('2d')!;
+    this.bctx = this.buf.getContext('2d')!;
+    this.lctx = this.lay.getContext('2d')!;
+    if (!document.getElementById('formica-crisp')) {
+      // Alpha below a half goes to nothing, above to solid: the threshold behind crisp()
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('width', '0');
+      svg.setAttribute('height', '0');
+      svg.setAttribute('aria-hidden', 'true');
+      svg.style.position = 'absolute';
+      svg.innerHTML = '<filter id="formica-crisp" color-interpolation-filters="sRGB"><feComponentTransfer><feFuncA type="discrete" tableValues="0 1"/></feComponentTransfer></filter>';
+      document.body.append(svg);
+    }
     for (let k = 0; k < 320; k++) this.drops.push({ x: Math.random(), y: Math.random(), v: 0.8 + Math.random() * 0.5 });
     this.resize();
     window.addEventListener('resize', () => this.resize());
@@ -153,26 +173,44 @@ export class Renderer {
     const s = this.sim;
     if (!s) return;
     this.t += dt;
-    const { ctx, cam } = this;
+    const { cam, screen } = this;
     this.terrain.setSeason(s.season);
     this.terrain.update();
 
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = '#1c1511';
-    ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-
     const sc = cam.scale;
-    ctx.setTransform(sc, 0, 0, sc, cam.vw / 2 - cam.x * sc, cam.vh / 2 - cam.y * sc);
-    const view: ViewRect = {
-      x0: cam.x - cam.vw / 2 / sc - 3,
-      x1: cam.x + cam.vw / 2 / sc + 3,
-      y0: cam.y - cam.vh / 2 / sc - 3,
-      y1: cam.y + cam.vh / 2 / sc + 3,
-    };
+    const left = cam.x - cam.vw / 2 / sc;
+    const top = cam.y - cam.vh / 2 / sc;
+    const view: ViewRect = { x0: left - 3, x1: left + cam.vw / sc + 3, y0: top - 3, y1: top + cam.vh / sc + 3 };
     this.ambient.update(s, v.vdt, view);
-    // Crisp texels when magnified, filtered when shrunk below a pixel
-    ctx.imageSmoothingEnabled = sc / TEX < 1;
-    ctx.imageSmoothingQuality = 'high';
+    // Screen pixels per texel. Zoomed in past about one, the world is drawn a texel to a pixel and then blown up, so
+    // ants, brood and effects sit on the same chunky grid as the sprites and soil instead of floating over it smoothly.
+    const k = sc / TEX;
+    const pixel = k > 1.25;
+    const bx = Math.floor(left * TEX) - 1;
+    const by = Math.floor(top * TEX) - 1;
+    const bw = Math.ceil(cam.vw / k) + 3;
+    const bh = Math.ceil(cam.vh / k) + 3;
+    let ctx = screen;
+    if (pixel) {
+      if (this.buf.width < bw || this.buf.height < bh) {
+        this.buf.width = Math.max(this.buf.width, bw);
+        this.buf.height = Math.max(this.buf.height, bh);
+      }
+      ctx = this.ctx = this.bctx;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.fillStyle = '#1c1511';
+      ctx.fillRect(0, 0, bw, bh);
+      ctx.setTransform(TEX, 0, 0, TEX, -bx, -by);
+      ctx.imageSmoothingEnabled = false;
+    } else {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.fillStyle = '#1c1511';
+      ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+      ctx.setTransform(sc, 0, 0, sc, cam.vw / 2 - cam.x * sc, cam.vh / 2 - cam.y * sc);
+      // Crisp texels when magnified, filtered when shrunk below a pixel
+      ctx.imageSmoothingEnabled = k < 1;
+      ctx.imageSmoothingQuality = 'high';
+    }
 
     const sky = this.drawSky(s);
     if (view.y0 < GROUND + 4) {
@@ -194,17 +232,22 @@ export class Renderer {
     if (v.overlay === 'scent') this.drawScent(s, view);
     else if (v.trails) this.drawTrails(s, view.x0, view.x1);
     this.drawAlarms(s, v.overlay === 'scent');
-    this.drawStores(s);
-    this.drawHerds(s, view);
-    this.drawCorpses(s);
+    this.crisp(() => {
+      this.drawStores(s);
+      this.drawHerds(s, view);
+      this.drawCorpses(s);
+    });
     this.drawFood(s, view);
-    this.drawBrood(s);
     this.drawCritters(s, view);
     this.drawRafts(s);
-    this.drawAnts(s, view);
-    // A centipede is big enough to show over the ants mobbing it
-    for (const c of s.eco.critters) if (c.kind === 'centipede' && c.x > view.x0 - 8 && c.x < view.x1 + 8) this.drawCentipede(c);
-    this.drawSwarm(s, view);
+    this.drawAntsUnder(s, view);
+    this.crisp(() => {
+      this.drawBrood(s);
+      this.drawAnts(s, view);
+      // A centipede is big enough to show over the ants mobbing it
+      for (const c of s.eco.critters) if (c.kind === 'centipede' && c.x > view.x0 - 8 && c.x < view.x1 + 8) this.drawCentipede(c);
+      this.drawSwarm(s, view);
+    });
     this.drawCovers(s);
     this.drawPlugs(s);
     this.ambient.draw(ctx, view, sc);
@@ -212,16 +255,52 @@ export class Renderer {
     this.drawSelection(v);
     this.drawPreview(s, v);
 
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.ctx = screen;
+    screen.setTransform(1, 0, 0, 1, 0, 0);
+    if (pixel) {
+      // Placed with sub-pixel precision, so the camera still glides while the texels stay square
+      screen.imageSmoothingEnabled = false;
+      screen.drawImage(this.buf, 0, 0, bw, bh, cam.vw / 2 + (bx / TEX - cam.x) * sc, cam.vh / 2 + (by / TEX - cam.y) * sc, bw * k, bh * k);
+    }
     this.drawWeather(s, dt);
     const dark = s.darkness;
     if (dark > 0) {
-      ctx.fillStyle = `rgba(8,14,40,${dark * 0.45})`;
-      ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+      screen.fillStyle = `rgba(8,14,40,${dark * 0.45})`;
+      screen.fillRect(0, 0, this.canvas.width, this.canvas.height);
     }
-    this.ambient.drawGlow(ctx, cam, this.dpr);
+    this.ambient.drawGlow(screen, cam, this.dpr);
     this.drawVignette();
     if (v.labels) this.drawLabels(s);
+  }
+
+  /**
+   * Draw into a side layer, then stamp it down with hard edges: a texel the shapes half cover becomes solid and the rest
+   * clear, as in hand-made pixel art. Only when zoomed in, where there is a texel grid to snap to.
+   */
+  private crisp(draw: () => void): void {
+    const base = this.ctx;
+    if (base !== this.bctx) {
+      draw();
+      return;
+    }
+    const { lay, lctx } = this;
+    if (lay.width !== this.buf.width || lay.height !== this.buf.height) {
+      lay.width = this.buf.width;
+      lay.height = this.buf.height;
+    } else {
+      lctx.setTransform(1, 0, 0, 1, 0, 0);
+      lctx.clearRect(0, 0, lay.width, lay.height);
+    }
+    lctx.setTransform(base.getTransform());
+    lctx.imageSmoothingEnabled = false;
+    this.ctx = lctx;
+    draw();
+    this.ctx = base;
+    base.save();
+    base.setTransform(1, 0, 0, 1, 0, 0);
+    base.filter = 'url(#formica-crisp)';
+    base.drawImage(lay, 0, 0);
+    base.restore();
   }
 
   /** Draw a sprite standing on the ground line at world x. */
@@ -312,6 +391,9 @@ export class Renderer {
     const I = s.weather.intensity;
     const n = Math.round(5 + I * 5);
     const span = W + 120;
+    // Clouds go grey and fade into the dark at night rather than glowing white against it
+    const dark = s.darkness;
+    const night = Math.max(I, dark * 0.85);
     for (let k = 0; k < n; k++) {
       const c = this.clouds[k];
       const kind = I > 0.5 && k >= 5 ? 1 : c.kind;
@@ -320,10 +402,11 @@ export class Renderer {
       const x = base + this.cam.x * 0.8 - W * 0.4;
       if (x < view.x0 - 20 || x > view.x1 + 20) continue;
       const big = 1 + I * 0.3;
-      ctx.globalAlpha = 0.9 * (1 - I * 0.55);
+      const fade = 1 - dark * 0.55;
+      ctx.globalAlpha = 0.9 * (1 - I * 0.55) * fade;
       this.blit(sprite(`cloud_${kind}`), x, c.y, false, 0, big);
-      if (I > 0.02) {
-        ctx.globalAlpha = I * 0.95;
+      if (night > 0.02) {
+        ctx.globalAlpha = night * 0.95 * fade;
         this.blit(variant(`cloud_${kind}`, 'grey'), x, c.y, false, 0, big);
       }
     }
@@ -332,11 +415,13 @@ export class Renderer {
 
   /** A parallax strip of scenery behind the meadow, hazed toward the sky colour. */
   private drawBackdrop(s: Sim, name: 'hills' | 'hedge', par: number, bottom: number, haze: number, sky: RGB): void {
-    const look: Look | null = [s.season === 0 ? 'spring' : null, null, 'autumn', 'winter'][s.season] as Look | null;
+    // The dunes get a parched version of the green backdrop, so lush hedges don't stand behind the sand
+    const dry = s.biome.id === 'dunes' && s.season < 2;
+    const look: Look | null = dry ? 'dry' : ([s.season === 0 ? 'spring' : null, null, 'autumn', 'winter'][s.season] as Look | null);
     const img = backdropVariant(name, look);
     const h = s.weather.intensity;
     const tint = mix(sky, [120, 128, 136], h * 0.4);
-    const key = `${s.season}:${tint.map((c) => c >> 3).join(',')}`;
+    const key = `${s.season}:${look}:${tint.map((c) => c >> 3).join(',')}`;
     let t = this.tints.get(name);
     if (!t || t.key !== key) {
       const [c, cx] = t ? [t.c, t.c.getContext('2d')!] : canvas(img.width, img.height);
@@ -995,14 +1080,11 @@ export class Renderer {
     this.ay = y;
   }
 
-  private drawAnts(s: Sim, view: ViewRect): void {
+  /** Contact shadows and alates' wings: soft, so they stay out of the hard-edged ant layer. */
+  private drawAntsUnder(s: Sim, view: ViewRect): void {
     const { ctx } = this;
-    const sc = this.cam.scale;
-    const legs = sc > 7;
-    const shine = sc > 6;
     const { x0, x1, y0, y1 } = view;
     const inView = (a: Ant): boolean => a.x > x0 && a.x < x1 && a.y > y0 && a.y < y1;
-    // Soft contact shadows for ants on the surface
     ctx.fillStyle = 'rgba(30,20,12,0.22)';
     ctx.beginPath();
     for (const c of s.colonies) {
@@ -1014,28 +1096,37 @@ export class Renderer {
     }
     ctx.fill();
     for (const c of s.colonies) {
-      const sp = c.species;
-      // Wings first so bodies sit on top
-      if (c.alateCount > 0) {
-        ctx.fillStyle = 'rgba(236,242,252,0.6)';
-        ctx.strokeStyle = 'rgba(160,176,200,0.6)';
-        ctx.lineWidth = 0.05;
-        ctx.beginPath();
-        for (const a of c.ants) {
-          if (a.caste !== 'alate' || !inView(a)) continue;
-          this.place(a);
-          const u = this.antSize(a);
-          const rot = Math.atan2(a.hy, a.hx);
-          const flap = a.intent === 'fly' ? Math.sin(this.t * 50 + a.id) * 0.5 : 0;
-          blob(ctx, this.ax - a.hx * 0.5 * u, this.ay - a.hy * 0.5 * u - 0.3 * u, 0.85 * u, 0.3 * u, rot - 0.35 + flap);
-          blob(ctx, this.ax - a.hx * 0.5 * u, this.ay - a.hy * 0.5 * u + 0.3 * u, 0.85 * u, 0.3 * u, rot + 0.35 - flap);
-        }
-        ctx.fill();
-        ctx.stroke();
+      if (c.alateCount <= 0) continue;
+      ctx.fillStyle = 'rgba(236,242,252,0.6)';
+      ctx.strokeStyle = 'rgba(160,176,200,0.6)';
+      ctx.lineWidth = 0.05;
+      ctx.beginPath();
+      for (const a of c.ants) {
+        if (a.caste !== 'alate' || !inView(a)) continue;
+        this.place(a);
+        const u = this.antSize(a);
+        const rot = Math.atan2(a.hy, a.hx);
+        const flap = a.intent === 'fly' ? Math.sin(this.t * 50 + a.id) * 0.5 : 0;
+        blob(ctx, this.ax - a.hx * 0.5 * u, this.ay - a.hy * 0.5 * u - 0.3 * u, 0.85 * u, 0.3 * u, rot - 0.35 + flap);
+        blob(ctx, this.ax - a.hx * 0.5 * u, this.ay - a.hy * 0.5 * u + 0.3 * u, 0.85 * u, 0.3 * u, rot + 0.35 - flap);
       }
+      ctx.fill();
+      ctx.stroke();
+    }
+  }
+
+  private drawAnts(s: Sim, view: ViewRect): void {
+    const { ctx } = this;
+    const sc = this.cam.scale;
+    const legs = sc > 7;
+    const shine = sc > 6;
+    const { x0, x1, y0, y1 } = view;
+    const inView = (a: Ant): boolean => a.x > x0 && a.x < x1 && a.y > y0 && a.y < y1;
+    for (const c of s.colonies) {
+      const sp = c.species;
       if (legs) {
         ctx.strokeStyle = sp.color;
-        ctx.lineWidth = 0.08;
+        ctx.lineWidth = 1 / TEX;
         ctx.lineCap = 'round';
         ctx.beginPath();
         for (const a of c.ants) {
@@ -1312,6 +1403,7 @@ export class Renderer {
     ctx.globalAlpha = 1;
   }
 
+  /** Rain and snow in screen space, cut into blocks a texel across so they match the world when zoomed in. */
   private drawWeather(s: Sim, dt: number): void {
     const I = s.weather.intensity;
     if (I < 0.02) return;
@@ -1322,9 +1414,8 @@ export class Renderer {
     const vw = cam.vw;
     const vh = cam.vh;
     const d = this.dpr;
-    ctx.strokeStyle = 'rgba(205,222,240,0.55)';
-    ctx.fillStyle = 'rgba(255,255,255,0.9)';
-    ctx.lineWidth = 1.2 * d;
+    const u = Math.max(2 * d, cam.scale / TEX);
+    ctx.fillStyle = snow ? 'rgba(250,252,255,0.92)' : 'rgba(196,216,236,0.5)';
     ctx.beginPath();
     for (let k = 0; k < this.drops.length; k++) {
       const p = this.drops[k];
@@ -1334,20 +1425,20 @@ export class Renderer {
         p.x = Math.random();
       }
       if (k >= n) continue;
-      const sx = p.x * vw + (snow ? Math.sin(this.t * 1.5 + k) * 12 * d : 0);
-      const sy = p.y * vh;
+      const sx = Math.round((p.x * vw + (snow ? Math.sin(this.t * 1.5 + k) * 12 * d : 0)) / u) * u;
+      const sy = Math.round((p.y * vh) / u) * u;
       const wp = cam.toWorld(sx, sy);
       if (wp.x < 0 || wp.x >= W || wp.y > w.top[Math.floor(wp.x)]) continue;
       if (snow) {
-        ctx.moveTo(sx + 1.8 * d, sy);
-        ctx.arc(sx, sy, 1.8 * d, 0, Math.PI * 2);
+        const f = k % 3 === 0 ? 2 : 1;
+        ctx.rect(sx, sy, u * f, u * f);
       } else {
-        ctx.moveTo(sx, sy);
-        ctx.lineTo(sx - 4 * d, sy + 16 * d);
+        // A slanting streak as a two-step stair
+        ctx.rect(sx, sy, u, u * 3);
+        ctx.rect(sx - u, sy + u * 3, u, u * 3);
       }
     }
-    if (snow) ctx.fill();
-    else ctx.stroke();
+    ctx.fill();
   }
 
   private drawVignette(): void {
@@ -1368,7 +1459,7 @@ export class Renderer {
     if (!p || this.cam.zoom < 1.6) return;
     const { ctx, cam } = this;
     const d = this.dpr;
-    ctx.font = `600 ${11 * d}px system-ui, sans-serif`;
+    ctx.font = `600 ${12 * d}px system-ui, -apple-system, 'Segoe UI', sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     const names: Record<number, string> = { [ROLE_QUEEN]: 'Queen', [ROLE_NURSERY]: 'Nursery', [ROLE_FOOD]: 'Food store', [ROLE_MIDDEN]: 'Midden', [ROLE_GRANARY]: 'Granary' };
@@ -1378,13 +1469,19 @@ export class Renderer {
       if (!name) continue;
       const sp = cam.toScreen(pr.ex + 0.5, pr.ey - 4.2);
       if (sp.x < -50 || sp.y < -20 || sp.x > cam.vw + 50 || sp.y > cam.vh + 20) continue;
-      const tw = ctx.measureText(name).width + 12 * d;
-      ctx.fillStyle = 'rgba(255,255,255,0.78)';
-      ctx.beginPath();
-      ctx.roundRect(sp.x - tw / 2, sp.y - 9 * d, tw, 18 * d, 9 * d);
-      ctx.fill();
-      ctx.fillStyle = '#2b211b';
-      ctx.fillText(name, sp.x, sp.y + 0.5 * d);
+      // A small dark tag with notched corners, like the HUD panels
+      const tw = Math.round(ctx.measureText(name).width + 14 * d);
+      const th = Math.round(19 * d);
+      const x = Math.round(sp.x - tw / 2);
+      const y = Math.round(sp.y - th / 2);
+      const n = Math.round(2 * d);
+      ctx.fillStyle = 'rgba(16,11,8,0.82)';
+      ctx.fillRect(x + n, y, tw - n * 2, th);
+      ctx.fillRect(x, y + n, tw, th - n * 2);
+      ctx.fillStyle = 'rgba(70,53,42,0.9)';
+      ctx.fillRect(x + n, y + th - n, tw - n * 2, n);
+      ctx.fillStyle = '#f3e7d3';
+      ctx.fillText(name, sp.x, sp.y);
     }
   }
 

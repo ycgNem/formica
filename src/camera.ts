@@ -11,9 +11,9 @@ export class Camera {
   vw = 1;
   vh = 1;
 
-  /** Cells-to-pixels scale at zoom 1, where the whole world fits. */
+  /** Cells-to-pixels scale at zoom 1, where the world just covers the screen: no bars at the sides or top. */
   get fit(): number {
-    return Math.min(this.vw / W, this.vh / (H - TOP));
+    return Math.max(this.vw / W, this.vh / (H - TOP));
   }
 
   get scale(): number {

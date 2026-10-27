@@ -10,7 +10,7 @@ export interface Series {
 }
 
 /** Faint season tints behind the plot, so a winter dip reads as a winter dip. */
-const SEASON_TINT = ['rgba(120,180,90,0.10)', 'rgba(242,181,58,0.12)', 'rgba(200,110,60,0.10)', 'rgba(110,140,190,0.13)'];
+const SEASON_TINT = ['rgba(120,180,90,0.12)', 'rgba(242,181,58,0.1)', 'rgba(220,120,60,0.12)', 'rgba(130,160,210,0.12)'];
 
 /**
  * A small line chart of the colony's history [v1.2 QoL]. Plain canvas, sized to its CSS box, redrawn whenever the
@@ -37,7 +37,7 @@ export function drawChart(canvas: HTMLCanvasElement, history: Sample[], series: 
   ctx.font = '600 10px system-ui, sans-serif';
   ctx.textBaseline = 'alphabetic';
   if (n < 2) {
-    ctx.fillStyle = 'rgba(43,33,27,0.45)';
+    ctx.fillStyle = 'rgba(243,231,211,0.45)';
     ctx.fillText('The graph fills in as the days go by.', padL, padT + hgt / 2);
     return;
   }
@@ -61,7 +61,7 @@ export function drawChart(canvas: HTMLCanvasElement, history: Sample[], series: 
   const yOf = (v: number): number => padT + hgt - (v / max) * hgt;
 
   // Gridlines at a half and the top
-  ctx.strokeStyle = 'rgba(43,33,27,0.08)';
+  ctx.strokeStyle = 'rgba(243,231,211,0.08)';
   ctx.lineWidth = 1;
   ctx.beginPath();
   for (const f of [0.5, 1]) {
@@ -70,7 +70,7 @@ export function drawChart(canvas: HTMLCanvasElement, history: Sample[], series: 
     ctx.lineTo(padL + w, y);
   }
   ctx.stroke();
-  ctx.fillStyle = 'rgba(43,33,27,0.5)';
+  ctx.fillStyle = 'rgba(243,231,211,0.5)';
   ctx.fillText(fmtNum(max), padL, padT - 3);
 
   const barW = Math.max(1, (w / n) * 0.7);
@@ -85,8 +85,8 @@ export function drawChart(canvas: HTMLCanvasElement, history: Sample[], series: 
       });
       continue;
     }
-    ctx.lineWidth = 1.75;
-    ctx.lineJoin = 'round';
+    ctx.lineWidth = 2;
+    ctx.lineJoin = 'miter';
     ctx.setLineDash(s.dash ? [4, 3] : []);
     ctx.beginPath();
     s.values.forEach((v, k) => {
@@ -100,7 +100,7 @@ export function drawChart(canvas: HTMLCanvasElement, history: Sample[], series: 
   }
 
   // Day labels along the bottom, as many as fit
-  ctx.fillStyle = 'rgba(43,33,27,0.5)';
+  ctx.fillStyle = 'rgba(243,231,211,0.5)';
   const days = span / DAY;
   const every = days <= 6 ? 1 : days <= 14 ? 2 : days <= 30 ? 5 : days <= 70 ? 10 : 20;
   for (let d = Math.ceil(t0 / DAY / every) * every; d * DAY <= t1; d += every) {
